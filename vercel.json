@@ -1,0 +1,23 @@
+﻿{
+    "framework":  "nextjs",
+    "build":  {
+                  "env":  {
+                              "PERPLEXITY_API_KEY":  "@perplexity_api_key",
+                              "OPENAI_API_KEY":  "@openai_api_key"
+                          }
+              },
+    "buildCommand":  "npm run build",
+    "version":  2,
+    "installCommand":  "npm install",
+    "functions":  {
+                      "app/api/**/*.ts":  {
+                                              "maxDuration":  30
+                                          }
+                  },
+    "name":  "neural-terminal",
+    "env":  {
+                "PERPLEXITY_API_KEY":  "@perplexity_api_key",
+                "OPENAI_API_KEY":  "@openai_api_key"
+            },
+    "devCommand":  "npm run dev"
+}

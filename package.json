@@ -1,0 +1,49 @@
+﻿{
+    "version":  "2.1.0",
+    "repository":  {
+                       "type":  "git",
+                       "url":  "https://github.com/duharts/neural-terminal.git"
+                   },
+    "private":  true,
+    "dependencies":  {
+                         "tailwindcss":  "^3.3.6",
+                         "postcss":  "^8.4.32",
+                         "react":  "^18.2.0",
+                         "@types/react-dom":  "^18.2.17",
+                         "next":  "14.0.4",
+                         "@types/node":  "^20.10.4",
+                         "react-dom":  "^18.2.0",
+                         "autoprefixer":  "^10.4.16",
+                         "lucide-react":  "^0.263.1",
+                         "typescript":  "^5.3.3",
+                         "@types/react":  "^18.2.42"
+                     },
+    "name":  "neural-terminal",
+    "scripts":  {
+                    "lint":  "next lint",
+                    "build":  "next build",
+                    "dev":  "next dev",
+                    "start":  "next start"
+                },
+    "bugs":  {
+                 "url":  "https://github.com/duharts/neural-terminal/issues"
+             },
+    "description":  "AI-powered voice terminal with ChatGPT, GPT-4, and Perplexity integration. Beautiful cyberpunk interface with voice recognition.",
+    "engines":  {
+                    "node":  "\u003e=18.0.0"
+                },
+    "keywords":  [
+                     "ai",
+                     "voice",
+                     "terminal",
+                     "chatgpt",
+                     "gpt4",
+                     "perplexity",
+                     "neural",
+                     "interface",
+                     "cyberpunk"
+                 ],
+    "author":  "duharts",
+    "homepage":  "https://github.com/duharts/neural-terminal",
+    "license":  "MIT"
+}
