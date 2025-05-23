@@ -1,9 +1,8 @@
 ﻿/** @type {import('next').NextConfig} */
 const nextConfig = {
-   
-    $inner = $matches[1] -replace "(?m)^\s*appDir\s*:\s*true\s*,?\s*", ""
-    "experimental: {" + $inner.Trim() + "}"
-},
+  experimental: {
+    appDir: true,
+  },
   env: {
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     PERPLEXITY_API_KEY: process.env.PERPLEXITY_API_KEY,
@@ -24,4 +23,3 @@ const nextConfig = {
 }
 
 module.exports = nextConfig
-
