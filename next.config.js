@@ -1,27 +1,13 @@
 ﻿/** @type {import('next').NextConfig} */
 const nextConfig = {
-   
-    $inner = $matches[1] -replace "(?m)^\s*appDir\s*:\s*true\s*,?\s*", ""
-    "experimental: {" + $inner.Trim() + "}"
-},
+  reactStrictMode: true,
+  experimental: {
+    // You can add valid flags here if needed
+  },
   env: {
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-    PERPLEXITY_API_KEY: process.env.PERPLEXITY_API_KEY,
-  },
-  async headers() {
-    return [
-      {
-        source: '/api/:path*',
-        headers: [
-          { key: 'Access-Control-Allow-Credentials', value: 'true' },
-          { key: 'Access-Control-Allow-Origin', value: '*' },
-          { key: 'Access-Control-Allow-Methods', value: 'GET,OPTIONS,PATCH,DELETE,POST,PUT' },
-          { key: 'Access-Control-Allow-Headers', value: 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version' },
-        ],
-      },
-    ];
-  },
-}
+    PERPLEXITY_API_KEY: process.env.PERPLEXITY_API_KEY
+  }
+};
 
-module.exports = nextConfig
-
+module.exports = nextConfig;
