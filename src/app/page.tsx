@@ -1,1036 +1,613 @@
-﻿'use client'
+﻿'use client';
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import { 
-  Mic, MicOff, Send, Settings, HelpCircle, History, Trash2, 
-  Activity, Sliders, Terminal, Zap, Volume2, VolumeX, 
-  Download, Upload, Copy, Eye, EyeOff, Cpu, Brain, 
-  Wifi, WifiOff, Power, RotateCcw, AlertTriangle, CheckCircle
-} from 'lucide-react'
+  Mic, MicOff, Send, Terminal, Cpu, Zap, Settings, 
+  Volume2, VolumeX, RotateCcw, Trash2, Download,
+  Activity, Wifi, Shield, Database, Clock
+} from 'lucide-react';
 
-interface ChatMessage {
-  role: 'user' | 'assistant'
-  content: string
-  timestamp: number
-  model?: string
-  tokens?: number
+interface Message {
+  id: string;
+  type: 'user' | 'assistant' | 'system' | 'error';
+  content: string;
+  timestamp: Date;
+  model?: string;
 }
 
-interface TranscriptionEntry {
-  text: string
-  timestamp: number
-  confidence?: number
-}
-
-interface SystemStats {
-  totalChats: number
-  totalTokens: number
-  avgResponseTime: number
-  uptime: number
-  errors: number
-}
-
-interface ErrorLog {
-  timestamp: number
-  level: 'ERROR' | 'WARN' | 'INFO'
-  message: string
-  details?: any
-}
-
-const LLM_PROVIDERS = {
-  'ChatGPT': { endpoint: '/api/chat', model: 'gpt-3.5-turbo', color: 'text-blue-400' },
-  'GPT-4': { endpoint: '/api/chat', model: 'gpt-4', color: 'text-purple-400' },
-  'Perplexity': { endpoint: '/api/chat', model: 'perplexity', color: 'text-orange-400' }
+interface AIConfig {
+  model: 'gpt-4' | 'gpt-3.5-turbo' | 'perplexity';
+  temperature: number;
+  maxTokens: number;
+  systemPrompt: string;
 }
 
 export default function NeuralTerminal() {
-  const [isRecording, setIsRecording] = useState(false)
-  const [message, setMessage] = useState('')
-  const [terminalOutput, setTerminalOutput] = useState<string[]>([])
-  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([])
-  const [transcriptionHistory, setTranscriptionHistory] = useState<TranscriptionEntry[]>([])
-  const [selectedLLM, setSelectedLLM] = useState('ChatGPT')
-  const [isLoading, setIsLoading] = useState(false)
-  const [status, setStatus] = useState('SYSTEM READY')
-  const [showSettings, setShowSettings] = useState(false)
-  const [showHistory, setShowHistory] = useState(false)
-  const [showLogs, setShowLogs] = useState(false)
-  const [soundEnabled, setSoundEnabled] = useState(true)
-  const [autoSend, setAutoSend] = useState(true)
-  const [showTokens, setShowTokens] = useState(false)
-  const [isConnected, setIsConnected] = useState(true)
-  const [errorLogs, setErrorLogs] = useState<ErrorLog[]>([])
-  
-  const [systemStats, setSystemStats] = useState<SystemStats>({
-    totalChats: 0,
-    totalTokens: 0,
-    avgResponseTime: 0,
-    uptime: Date.now(),
-    errors: 0
-  })
+  const [messages, setMessages] = useState<Message[]>([
+    {
+      id: '1',
+      type: 'system',
+      content: `
+╔══════════════════════════════════════════════════════════════╗
+║                    NEURAL TERMINAL v2.1.0                   ║
+║                Advanced AI Voice Interface                   ║
+╠══════════════════════════════════════════════════════════════╣
+║ STATUS: ONLINE  │  NEURAL LINK: ACTIVE  │  VOICE: READY     ║
+║ AI MODELS: GPT-4, GPT-3.5, PERPLEXITY   │  MEMORY: ACTIVE   ║
+╚══════════════════════════════════════════════════════════════╝
 
-  const [settings, setSettings] = useState({
-    openaiApiKey: '',
-    perplexityApiKey: '',
-    temperature: 0.9,
-    maxTokens: 3000,
-    conversationMemory: true,
-    smartContext: true,
-    voiceAutoSend: true,
-    showTimestamps: true,
-    darkMode: true,
-    soundEffects: true,
-    debugMode: false
-  })
-
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const terminalRef = useRef<HTMLDivElement>(null)
-  const audioContextRef = useRef<AudioContext | null>(null)
-
-  useEffect(() => {
-    initializeTerminal()
-    loadSettings()
-    return () => {
-      if (audioContextRef.current) {
-        audioContextRef.current.close()
-      }
+🎤 Voice commands available - Click microphone to activate
+💬 Type "help" for available commands
+🧠 Multiple AI models ready for complex queries
+⚡ Real-time processing with advanced neural networks
+      `,
+      timestamp: new Date("2024-01-01T12:00:00Z")
     }
-  }, [])
+  ]);
 
+  const [input, setInput] = useState('');
+  const [isListening, setIsListening] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  
+  const [config, setConfig] = useState<AIConfig>({
+    model: 'gpt-4',
+    temperature: 0.7,
+    maxTokens: 2000,
+    systemPrompt: 'You are NEURAL-AI, an advanced AI assistant in a cyberpunk terminal. Respond professionally but with a slight technical/futuristic tone. Be helpful, intelligent, and concise.'
+  });
+
+  const terminalRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recognitionRef = useRef<any>(null);
+  const synthRef = useRef<SpeechSynthesis | null>(null);
+
+  // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight
+      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
-  }, [terminalOutput])
+  }, [messages]);
 
-  const logError = (level: 'ERROR' | 'WARN' | 'INFO', message: string, details?: any) => {
-    const errorEntry: ErrorLog = {
-      timestamp: Date.now(),
-      level,
-      message,
-      details
+  // Focus input on mount and setup speech synthesis
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.focus();
     }
-    setErrorLogs(prev => [...prev.slice(-99), errorEntry]) // Keep last 100 errors
-    
-    if (level === 'ERROR') {
-      setSystemStats(prev => ({ ...prev, errors: prev.errors + 1 }))
+    if (typeof window !== 'undefined') {
+      synthRef.current = window.speechSynthesis;
     }
-    
-    if (settings.debugMode) {
-      console.log(`[${level}] ${message}`, details)
-    }
-  }
+  }, []);
 
-  const initializeTerminal = () => {
-    appendToTerminal('╔══════════════════════════════════════════╗')
-    appendToTerminal('║      NEURAL TERMINAL v2.1 - ENHANCED    ║')
-    appendToTerminal('║        AI VOICE INTERFACE SYSTEM        ║')
-    appendToTerminal('╚══════════════════════════════════════════╝')
-    appendToTerminal('')
-    appendToTerminal('> INITIALIZING NEURAL MATRIX...')
-    appendToTerminal('> VOICE RECOGNITION: ONLINE')
-    appendToTerminal('> AI MODELS: READY')
-    appendToTerminal('> ENHANCED PROMPTS: LOADED')
-    appendToTerminal(`> ACTIVE MODEL: ${selectedLLM}`)
-    appendToTerminal('> CONVERSATION MEMORY: ENABLED')
-    appendToTerminal('> SMART CONTEXT: ACTIVE')
-    appendToTerminal('> ERROR LOGGING: INITIALIZED')
-    appendToTerminal('')
-    appendToTerminal('╔════════════════════════════════════════╗')
-    appendToTerminal('║ AVAILABLE COMMANDS:                   ║')
-    appendToTerminal('║ help    │ show command matrix          ║')
-    appendToTerminal('║ status  │ system diagnostics           ║')
-    appendToTerminal('║ clear   │ clear terminal               ║')
-    appendToTerminal('║ history │ conversation logs            ║')
-    appendToTerminal('║ errors  │ error log viewer             ║')
-    appendToTerminal('║ export  │ export chat history          ║')
-    appendToTerminal('║ stats   │ usage statistics             ║')
-    appendToTerminal('║ debug   │ toggle debug mode            ║')
-    appendToTerminal('╚════════════════════════════════════════╝')
-    appendToTerminal('')
-    appendToTerminal('NEURAL INTERFACE READY > _')
-    
-    logError('INFO', 'Neural Terminal initialized successfully')
-    playSystemSound('startup')
-  }
+  // Initialize speech recognition
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'webkitSpeechRecognition' in window) {
+      const SpeechRecognition = (window as any).webkitSpeechRecognition;
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = false;
+      recognitionRef.current.interimResults = false;
+      recognitionRef.current.lang = 'en-US';
 
-  const loadSettings = () => {
+      recognitionRef.current.onstart = () => {
+        setIsListening(true);
+        addMessage('system', '🎤 Voice recognition activated - Listening...');
+      };
+
+      recognitionRef.current.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        setInput(transcript);
+        addMessage('user', transcript);
+        handleAIQuery(transcript);
+      };
+
+      recognitionRef.current.onerror = (event: any) => {
+        addMessage('error', `Voice recognition error: ${event.error}`);
+        setIsListening(false);
+      };
+
+      recognitionRef.current.onend = () => {
+        setIsListening(false);
+      };
+    }
+  }, []);
+
+  const addMessage = useCallback((type: Message['type'], content: string, model?: string) => {
+    const newMessage: Message = {
+      id: Date.now().toString() + Math.random(),
+      type,
+      content,
+      timestamp: new Date("2024-01-01T12:00:00Z"),
+      model
+    };
+    setMessages(prev => [...prev, newMessage]);
+  }, []);
+
+  const handleAIQuery = async (query: string) => {
+    setIsLoading(true);
     try {
-      const saved = localStorage.getItem('neural-terminal-settings')
-      if (saved) {
-        const loadedSettings = JSON.parse(saved)
-        setSettings({ ...settings, ...loadedSettings })
-        logError('INFO', 'Settings loaded from localStorage')
-      }
-    } catch (error) {
-      logError('ERROR', 'Failed to load settings', error)
-    }
-  }
-
-  const saveSettings = () => {
-    try {
-      localStorage.setItem('neural-terminal-settings', JSON.stringify(settings))
-      appendToTerminal('> SETTINGS SAVED TO LOCAL STORAGE')
-      logError('INFO', 'Settings saved successfully')
-    } catch (error) {
-      appendToTerminal('> ERROR: FAILED TO SAVE SETTINGS')
-      logError('ERROR', 'Failed to save settings', error)
-    }
-  }
-
-  const appendToTerminal = (text: string) => {
-    const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false })
-    const prefix = settings.showTimestamps ? `[${timestamp}] ` : ''
-    setTerminalOutput(prev => [...prev.slice(-199), `${prefix}${text}`]) // Keep last 200 lines
-  }
-
-  const playSystemSound = (type: 'startup' | 'beep' | 'error' | 'success') => {
-    if (!soundEnabled || !settings.soundEffects) return
-    
-    try {
-      if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContext()
-      }
-      
-      const ctx = audioContextRef.current
-      const oscillator = ctx.createOscillator()
-      const gainNode = ctx.createGain()
-      
-      oscillator.connect(gainNode)
-      gainNode.connect(ctx.destination)
-      
-      switch (type) {
-        case 'startup':
-          oscillator.frequency.setValueAtTime(800, ctx.currentTime)
-          oscillator.frequency.exponentialRampToValueAtTime(400, ctx.currentTime + 0.3)
-          break
-        case 'beep':
-          oscillator.frequency.setValueAtTime(600, ctx.currentTime)
-          break
-        case 'error':
-          oscillator.frequency.setValueAtTime(200, ctx.currentTime)
-          break
-        case 'success':
-          oscillator.frequency.setValueAtTime(800, ctx.currentTime)
-          break
-      }
-      
-      gainNode.gain.setValueAtTime(0.1, ctx.currentTime)
-      gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3)
-      
-      oscillator.start(ctx.currentTime)
-      oscillator.stop(ctx.currentTime + 0.3)
-    } catch (error) {
-      logError('WARN', 'Audio system error', error)
-    }
-  }
-
-  const startRecording = async () => {
-    try {
-      logError('INFO', 'Starting voice recording')
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { 
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 16000
-        } 
-      })
-      
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
-      })
-      const audioChunks: Blob[] = []
-
-      mediaRecorder.ondataavailable = (event) => {
-        audioChunks.push(event.data)
-      }
-
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' })
-        await processAudio(audioBlob)
-        stream.getTracks().forEach(track => track.stop())
-      }
-
-      mediaRecorderRef.current = mediaRecorder
-      mediaRecorder.start()
-      setIsRecording(true)
-      setStatus('NEURAL CAPTURE ACTIVE')
-      appendToTerminal('> VOICE CAPTURE INITIATED')
-      appendToTerminal('> NEURAL PROCESSING READY...')
-      playSystemSound('beep')
-      logError('INFO', 'Voice recording started successfully')
-    } catch (error) {
-      appendToTerminal('> ERROR: MICROPHONE ACCESS DENIED')
-      appendToTerminal('> CHECK BROWSER PERMISSIONS')
-      setStatus('MIC ERROR')
-      playSystemSound('error')
-      logError('ERROR', 'Failed to start voice recording', error)
-    }
-  }
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop()
-      setIsRecording(false)
-      setStatus('NEURAL PROCESSING...')
-      appendToTerminal('> ENDING VOICE CAPTURE')
-      appendToTerminal('> WHISPER AI TRANSCRIBING...')
-      logError('INFO', 'Voice recording stopped')
-    }
-  }
-
-  const processAudio = async (audioBlob: Blob) => {
-    const startTime = Date.now()
-    
-    try {
-      setStatus('WHISPER AI PROCESSING...')
-      logError('INFO', `Processing audio blob: ${audioBlob.size} bytes`)
-      
-      const formData = new FormData()
-      formData.append('audio', audioBlob, 'recording.webm')
-      
-      const response = await fetch('/api/transcribe', {
+      const response = await fetch('/api/chat', {
         method: 'POST',
-        body: formData,
-      })
-
-      if (response.ok) {
-        const { text, confidence, debug } = await response.json()
-        const processingTime = Date.now() - startTime
-        
-        if (text) {
-          appendToTerminal(`> TRANSCRIPT: "${text}"`)
-          appendToTerminal(`> CONFIDENCE: ${Math.round((confidence || 0.95) * 100)}%`)
-          appendToTerminal(`> PROCESSING TIME: ${processingTime}ms`)
-          
-          setMessage(text)
-          
-          const entry: TranscriptionEntry = {
-            text,
-            timestamp: Date.now(),
-            confidence: confidence || 0.95
-          }
-          setTranscriptionHistory(prev => [...prev, entry])
-          
-          if (autoSend && settings.voiceAutoSend) {
-            appendToTerminal('> AUTO-SENDING TO NEURAL NETWORK...')
-            await sendToLLM(text)
-          } else {
-            appendToTerminal('> READY TO SEND (PRESS ENTER)')
-          }
-          
-          playSystemSound('success')
-          logError('INFO', `Transcription successful: ${text.length} characters`)
-        } else {
-          appendToTerminal('> NO SPEECH DETECTED')
-          appendToTerminal('> TRY SPEAKING LOUDER OR CLOSER TO MIC')
-          playSystemSound('error')
-          logError('WARN', 'No speech detected in audio')
-        }
-      } else {
-        const errorData = await response.json()
-        appendToTerminal(`> TRANSCRIPTION FAILED: ${response.status}`)
-        appendToTerminal(`> ERROR: ${errorData.error}`)
-        playSystemSound('error')
-        logError('ERROR', 'Transcription API error', { status: response.status, error: errorData })
-      }
-    } catch (error) {
-      appendToTerminal(`> PROCESSING ERROR: ${error}`)
-      playSystemSound('error')
-      logError('ERROR', 'Audio processing failed', error)
-    } finally {
-      setStatus('SYSTEM READY')
-    }
-  }
-
-  const sendMessage = async () => {
-    if (!message.trim()) return
-
-    const cmd = message.toLowerCase().trim()
-    
-    // Handle system commands
-    if (cmd === 'help') {
-      showHelp()
-      setMessage('')
-      return
-    }
-    if (cmd === 'clear') {
-      setTerminalOutput([])
-      appendToTerminal('> TERMINAL BUFFER CLEARED')
-      setMessage('')
-      return
-    }
-    if (cmd === 'status') {
-      showStatus()
-      setMessage('')
-      return
-    }
-    if (cmd === 'history') {
-      showChatHistory()
-      setMessage('')
-      return
-    }
-    if (cmd === 'errors') {
-      setShowLogs(!showLogs)
-      appendToTerminal('> ERROR LOG VIEWER TOGGLED')
-      setMessage('')
-      return
-    }
-    if (cmd === 'export') {
-      exportChatHistory()
-      setMessage('')
-      return
-    }
-    if (cmd === 'stats') {
-      showStats()
-      setMessage('')
-      return
-    }
-    if (cmd === 'debug') {
-      setSettings(prev => ({ ...prev, debugMode: !prev.debugMode }))
-      appendToTerminal(`> DEBUG MODE: ${!settings.debugMode ? 'ENABLED' : 'DISABLED'}`)
-      setMessage('')
-      return
-    }
-    if (cmd === 'reset') {
-      resetSystem()
-      setMessage('')
-      return
-    }
-
-    appendToTerminal(`> USER: ${message}`)
-    const userMessage = message
-    setMessage('')
-    
-    await sendToLLM(userMessage)
-  }
-
-  const sendToLLM = async (text: string) => {
-    const startTime = Date.now()
-    setIsLoading(true)
-    setStatus(`NEURAL LINK: ${selectedLLM}`)
-
-    try {
-      logError('INFO', `Sending message to ${selectedLLM}: ${text.length} characters`)
-      const provider = LLM_PROVIDERS[selectedLLM as keyof typeof LLM_PROVIDERS]
-      
-      const response = await fetch(provider.endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          message: text,
-          model: provider.model,
-          history: settings.conversationMemory ? chatHistory.slice(-20) : [],
-          settings
-        }),
-      })
-
-      const processingTime = Date.now() - startTime
-
-      if (response.ok) {
-        const { reply, debug } = await response.json()
-        
-        const estimatedTokens = Math.ceil((text.length + reply.length) / 4)
-        
-        const userMsg: ChatMessage = { 
-          role: 'user', 
-          content: text, 
-          timestamp: Date.now(),
-          tokens: Math.ceil(text.length / 4)
-        }
-        const assistantMsg: ChatMessage = { 
-          role: 'assistant', 
-          content: reply, 
-          timestamp: Date.now(), 
-          model: selectedLLM,
-          tokens: Math.ceil(reply.length / 4)
-        }
-        
-        setChatHistory(prev => [...prev, userMsg, assistantMsg])
-        
-        setSystemStats(prev => ({
-          ...prev,
-          totalChats: prev.totalChats + 1,
-          totalTokens: prev.totalTokens + estimatedTokens,
-          avgResponseTime: (prev.avgResponseTime + processingTime) / 2
-        }))
-        
-        appendToTerminal(`> ${selectedLLM}: ${reply}`)
-        
-        if (showTokens) {
-          appendToTerminal(`> TOKENS: ~${estimatedTokens} | TIME: ${processingTime}ms`)
-        }
-        
-        if (settings.debugMode && debug) {
-          appendToTerminal(`> DEBUG: ${JSON.stringify(debug)}`)
-        }
-        
-        appendToTerminal('> RESPONSE COPIED TO CLIPBOARD')
-        
-        navigator.clipboard.writeText(reply).catch(() => {
-          appendToTerminal('> CLIPBOARD COPY FAILED')
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          message: query,
+          config: config
         })
-        
-        playSystemSound('success')
-        logError('INFO', `Response received successfully from ${selectedLLM}`)
-      } else {
-        const errorData = await response.json()
-        appendToTerminal(`> ERROR: CONNECTION FAILED [${response.status}]`)
-        appendToTerminal(`> ${errorData.error}`)
-        if (settings.debugMode && errorData.debug) {
-          appendToTerminal(`> DEBUG: ${JSON.stringify(errorData.debug)}`)
-        }
-        playSystemSound('error')
-        logError('ERROR', `API request failed`, { status: response.status, error: errorData })
+      });
+
+      if (!response.ok) throw new Error(`API Error: ${response.status}`);
+
+      const data = await response.json();
+      addMessage('assistant', data.response, config.model);
+      
+      // Optional text-to-speech
+      if (synthRef.current && data.response.length < 500) {
+        speakResponse(data.response);
       }
     } catch (error) {
-      appendToTerminal(`> NEURAL LINK ERROR: ${error}`)
-      playSystemSound('error')
-      logError('ERROR', 'Neural link failed', error)
+      addMessage('error', `❌ API Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
-      setIsLoading(false)
-      setStatus('SYSTEM READY')
+      setIsLoading(false);
     }
-  }
+  };
 
-  const showHelp = () => {
-    appendToTerminal('╔══════════════════════════════════════════╗')
-    appendToTerminal('║              COMMAND MATRIX              ║')
-    appendToTerminal('╠══════════════════════════════════════════╣')
-    appendToTerminal('║ help     │ Display this command matrix   ║')
-    appendToTerminal('║ status   │ Show system diagnostics       ║')
-    appendToTerminal('║ clear    │ Clear terminal buffer          ║')
-    appendToTerminal('║ history  │ Show conversation log          ║')
-    appendToTerminal('║ errors   │ Show error log viewer          ║')
-    appendToTerminal('║ export   │ Export chat history            ║')
-    appendToTerminal('║ stats    │ Usage statistics               ║')
-    appendToTerminal('║ debug    │ Toggle debug mode              ║')
-    appendToTerminal('║ reset    │ Reset neural interface         ║')
-    appendToTerminal('║ [MIC]    │ Voice neural interface         ║')
-    appendToTerminal('╚══════════════════════════════════════════╝')
-  }
-
-  const showStatus = () => {
-    const uptime = Math.floor((Date.now() - systemStats.uptime) / 1000)
-    const hours = Math.floor(uptime / 3600)
-    const minutes = Math.floor((uptime % 3600) / 60)
-    const seconds = uptime % 60
+  const speakResponse = (text: string) => {
+    if (!synthRef.current) return;
     
-    appendToTerminal('╔══════════════════════════════════════════╗')
-    appendToTerminal('║            SYSTEM DIAGNOSTICS            ║')
-    appendToTerminal('╠══════════════════════════════════════════╣')
-    appendToTerminal(`║ VERSION     │ Neural Terminal v2.1       ║`)
-    appendToTerminal(`║ AI MODEL    │ ${selectedLLM.padEnd(23)} ║`)
-    appendToTerminal(`║ TEMPERATURE │ ${settings.temperature.toFixed(1).padEnd(23)} ║`)
-    appendToTerminal(`║ MAX TOKENS  │ ${settings.maxTokens.toString().padEnd(23)} ║`)
-    appendToTerminal(`║ MEMORY      │ ${(settings.conversationMemory ? 'ENABLED' : 'DISABLED').padEnd(23)} ║`)
-    appendToTerminal(`║ CONTEXT     │ ${(settings.smartContext ? 'SMART' : 'BASIC').padEnd(23)} ║`)
-    appendToTerminal(`║ DEBUG MODE  │ ${(settings.debugMode ? 'ENABLED' : 'DISABLED').padEnd(23)} ║`)
-    appendToTerminal(`║ VOICE AUTO  │ ${(settings.voiceAutoSend ? 'ENABLED' : 'DISABLED').padEnd(23)} ║`)
-    appendToTerminal(`║ SOUND FX    │ ${(settings.soundEffects ? 'ENABLED' : 'DISABLED').padEnd(23)} ║`)
-    appendToTerminal(`║ OPENAI API  │ ${(settings.openaiApiKey ? 'CONNECTED' : 'OFFLINE').padEnd(23)} ║`)
-    appendToTerminal(`║ PERPLEXITY  │ ${(settings.perplexityApiKey ? 'CONNECTED' : 'OFFLINE').padEnd(23)} ║`)
-    appendToTerminal(`║ UPTIME      │ ${`${hours}h ${minutes}m ${seconds}s`.padEnd(23)} ║`)
-    appendToTerminal(`║ ERRORS      │ ${systemStats.errors.toString().padEnd(23)} ║`)
-    appendToTerminal(`║ CONNECTION  │ ${(isConnected ? 'ONLINE' : 'OFFLINE').padEnd(23)} ║`)
-    appendToTerminal('╚══════════════════════════════════════════╝')
-  }
+    setIsSpeaking(true);
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.9;
+    utterance.pitch = 1;
+    utterance.volume = 0.8;
+    
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+    
+    synthRef.current.speak(utterance);
+  };
 
-  const showChatHistory = () => {
-    setShowHistory(!showHistory)
-    if (!showHistory) {
-      appendToTerminal('> OPENING NEURAL HISTORY VIEWER...')
-    } else {
-      appendToTerminal('> CLOSING HISTORY VIEWER')
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || isLoading) return;
+
+    const userInput = input.trim();
+    setInput('');
+    addMessage('user', userInput);
+
+    // Handle built-in commands
+    if (userInput.toLowerCase().startsWith('/')) {
+      handleSystemCommand(userInput);
+      return;
     }
-  }
 
-  const showStats = () => {
-    const uptime = Math.floor((Date.now() - systemStats.uptime) / 1000)
+    await handleAIQuery(userInput);
+  };
+
+  const handleSystemCommand = (command: string) => {
+    const cmd = command.toLowerCase();
     
-    appendToTerminal('╔══════════════════════════════════════════╗')
-    appendToTerminal('║             USAGE STATISTICS             ║')
-    appendToTerminal('╠══════════════════════════════════════════╣')
-    appendToTerminal(`║ TOTAL CHATS │ ${systemStats.totalChats.toString().padEnd(23)} ║`)
-    appendToTerminal(`║ TOTAL TOKENS│ ${systemStats.totalTokens.toString().padEnd(23)} ║`)
-    appendToTerminal(`║ AVG RESPONSE│ ${Math.round(systemStats.avgResponseTime)}ms`.padEnd(23) + ' ║')
-    appendToTerminal(`║ VOICE TRANS │ ${transcriptionHistory.length.toString().padEnd(23)} ║`)
-    appendToTerminal(`║ ERROR COUNT │ ${systemStats.errors.toString().padEnd(23)} ║`)
-    appendToTerminal(`║ SESSION TIME│ ${Math.floor(uptime / 60)}m ${uptime % 60}s`.padEnd(23) + ' ║')
-    appendToTerminal('╚══════════════════════════════════════════╝')
-  }
+    switch (cmd) {
+      case '/help':
+        addMessage('system', `
+🔧 NEURAL TERMINAL COMMANDS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/help          - Show this help message
+/clear         - Clear terminal history
+/status        - System diagnostics
+/history       - Export conversation history
+/settings      - Open configuration panel
+/models        - List available AI models
+/voice on/off  - Toggle voice synthesis
+/reset         - Reset to default settings
 
-  const exportChatHistory = () => {
+💡 AI QUERIES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Simply type any question or use voice input!
+Examples: "Explain quantum computing", "Write Python code", etc.
+        `);
+        break;
+        
+      case '/clear':
+        setMessages([{
+          id: Date.now().toString(),
+          type: 'system',
+          content: '🧹 Terminal cleared - Neural interface ready',
+          timestamp: new Date("2024-01-01T12:00:00Z")
+        }]);
+        break;
+        
+      case '/status':
+        addMessage('system', `
+🔍 SYSTEM DIAGNOSTICS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🧠 Neural Network: ONLINE
+🎤 Voice Recognition: ${recognitionRef.current ? 'AVAILABLE' : 'UNAVAILABLE'}
+🔊 Speech Synthesis: ${synthRef.current ? 'READY' : 'UNAVAILABLE'}
+🤖 Current Model: ${config.model.toUpperCase()}
+🌡️ Temperature: ${config.temperature}
+📝 Max Tokens: ${config.maxTokens}
+💾 Messages in Memory: ${messages.length}
+⏰ Session Started: ${messages[0]?.timestamp.toLocaleString()}
+🔗 API Status: CONNECTED
+        `);
+        break;
+        
+      case '/models':
+        addMessage('system', `
+🤖 AVAILABLE AI MODELS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• GPT-4: Most capable, best for complex reasoning
+• GPT-3.5-TURBO: Fast and efficient for most tasks
+• PERPLEXITY: Real-time web search and current events
+
+Current: ${config.model.toUpperCase()}
+        `);
+        break;
+        
+      case '/voice on':
+        addMessage('system', '🔊 Voice synthesis enabled');
+        break;
+        
+      case '/voice off':
+        if (synthRef.current) {
+          synthRef.current.cancel();
+        }
+        setIsSpeaking(false);
+        addMessage('system', '🔇 Voice synthesis disabled');
+        break;
+        
+      case '/history':
+        downloadHistory();
+        break;
+        
+      case '/settings':
+        setShowSettings(true);
+        break;
+        
+      case '/reset':
+        setConfig({
+          model: 'gpt-4',
+          temperature: 0.7,
+          maxTokens: 2000,
+          systemPrompt: 'You are NEURAL-AI, an advanced AI assistant in a cyberpunk terminal.'
+        });
+        addMessage('system', '⚙️ Settings reset to defaults');
+        break;
+        
+      default:
+        addMessage('error', `❌ Unknown command: ${command}\nType /help for available commands`);
+    }
+  };
+
+  const toggleVoiceRecognition = async () => {
+    if (!recognitionRef.current) {
+      addMessage('error', '❌ Voice recognition not supported in this browser');
+      return;
+    }
+
+    if (isListening) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+      return;
+    }
+
     try {
-      const exportData = {
-        timestamp: new Date().toISOString(),
-        chatHistory,
-        transcriptionHistory,
-        errorLogs,
-        settings: { ...settings, openaiApiKey: '', perplexityApiKey: '' },
-        stats: systemStats
-      }
-      
-      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `neural-terminal-export-${new Date().toISOString().split('T')[0]}.json`
-      a.click()
-      URL.revokeObjectURL(url)
-      
-      appendToTerminal('> CHAT HISTORY EXPORTED SUCCESSFULLY')
-      appendToTerminal('> FILE DOWNLOADED TO DEFAULT FOLDER')
-      logError('INFO', 'Chat history exported successfully')
+      recognitionRef.current.start();
     } catch (error) {
-      appendToTerminal('> EXPORT FAILED: ' + error)
-      logError('ERROR', 'Export failed', error)
+      addMessage('error', `Voice recognition error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-  }
+  };
 
-  const resetSystem = () => {
-    setChatHistory([])
-    setTranscriptionHistory([])
-    setTerminalOutput([])
-    setErrorLogs([])
-    setSystemStats({
-      totalChats: 0,
-      totalTokens: 0,
-      avgResponseTime: 0,
-      uptime: Date.now(),
-      errors: 0
-    })
+  const downloadHistory = () => {
+    const historyText = messages.map(msg => 
+      `[${msg.timestamp.toLocaleString()}] ${msg.type.toUpperCase()}: ${msg.content}`
+    ).join('\n\n');
     
-    setTimeout(() => {
-      initializeTerminal()
-      appendToTerminal('> NEURAL INTERFACE RESET COMPLETE')
-    }, 100)
-  }
+    const blob = new Blob([historyText], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `neural-terminal-history-${Date.now()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    addMessage('system', '📥 Conversation history downloaded');
+  };
+
+  const formatTimestamp = (date: Date) => {
+    return date.toLocaleTimeString('en-US', { 
+      hour12: false, 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit' 
+    });
+  };
+
+  const getMessagePrefix = (type: Message['type']) => {
+    switch (type) {
+      case 'user': return '👤 USER';
+      case 'assistant': return '🧠 NEURAL-AI';
+      case 'system': return '⚙️ SYSTEM';
+      case 'error': return '❌ ERROR';
+    }
+  };
 
   return (
     <div className="min-h-screen bg-black text-terminal-green font-mono">
-      <div className="max-w-6xl mx-auto p-6">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-3">
-            <Terminal className="text-terminal-green glow-effect" size={32} />
-            <h1 className="text-3xl font-bold text-terminal-green glow-text">
-              NEURAL TERMINAL
-            </h1>
-            <div className="flex items-center gap-2 ml-4">
-              {isConnected ? (
-                <Wifi className="text-green-400" size={20} />
-              ) : (
-                <WifiOff className="text-red-400" size={20} />
-              )}
-              <div className="text-sm text-terminal-green opacity-70">v2.1</div>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setSoundEnabled(!soundEnabled)}
-              className="p-2 border border-terminal-green border-opacity-30 rounded text-terminal-green hover:border-opacity-60 hover:bg-terminal-green hover:bg-opacity-10 transition-all"
-            >
-              {soundEnabled ? <Volume2 size={20} /> : <VolumeX size={20} />}
-            </button>
-            <button
-              onClick={() => setShowTokens(!showTokens)}
-              className="p-2 border border-terminal-green border-opacity-30 rounded text-terminal-green hover:border-opacity-60 hover:bg-terminal-green hover:bg-opacity-10 transition-all"
-            >
-              {showTokens ? <Eye size={20} /> : <EyeOff size={20} />}
-            </button>
-            <button
-              onClick={() => setShowLogs(!showLogs)}
-              className={`p-2 border rounded text-terminal-green transition-all ${
-                systemStats.errors > 0 
-                  ? 'border-red-400 text-red-400 animate-pulse' 
-                  : 'border-terminal-green border-opacity-30 hover:border-opacity-60'
-              }`}
-            >
-              {systemStats.errors > 0 ? <AlertTriangle size={20} /> : <CheckCircle size={20} />}
-            </button>
-            <button
-              onClick={() => setShowSettings(!showSettings)}
-              className="px-4 py-2 border border-terminal-green border-opacity-30 rounded text-terminal-green font-medium hover:border-opacity-60 hover:bg-terminal-green hover:bg-opacity-10 transition-all"
-            >
-              <Settings className="inline mr-2" size={16} />
-              CONFIG
-            </button>
-          </div>
-        </div>
+      {/* Animated background */}
+      <div className="fixed inset-0 opacity-10">
+        <div className="absolute inset-0" style={{
+          backgroundImage: `
+            radial-gradient(circle at 25% 25%, #00ff41 0%, transparent 50%),
+            radial-gradient(circle at 75% 75%, #00ff41 0%, transparent 50%)
+          `,
+          animation: 'pulse 4s ease-in-out infinite alternate'
+        }}></div>
+      </div>
 
-        {/* Settings Panel */}
-        {showSettings && (
-          <div className="mb-6 p-6 border border-terminal-green border-opacity-30 rounded-lg bg-gray-900 bg-opacity-30 backdrop-blur-sm">
-            <h3 className="text-lg font-bold text-terminal-green mb-4 flex items-center gap-2">
-              <Brain size={20} />
-              NEURAL CONFIGURATION MATRIX
-            </h3>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* API Keys */}
-              <div className="space-y-4">
-                <h4 className="text-terminal-green opacity-70 font-semibold">API CREDENTIALS</h4>
-                <div>
-                  <label className="block text-sm text-terminal-green opacity-70 mb-2">OPENAI API KEY</label>
-                  <input
-                    type="password"
-                    placeholder="sk-..."
-                    value={settings.openaiApiKey}
-                    onChange={(e) => setSettings(prev => ({ ...prev, openaiApiKey: e.target.value }))}
-                    className="w-full p-3 bg-black border border-terminal-green border-opacity-30 rounded text-terminal-green font-mono focus:border-opacity-60 focus:bg-opacity-5 focus:bg-terminal-green transition-all"
-                  />
+      <div className="relative z-10 p-4">
+        <div className="max-w-4xl mx-auto">
+          {/* Enhanced Header */}
+          <div className="mb-6 p-6 border border-terminal-green-border rounded-lg bg-terminal-black-light relative overflow-hidden">
+            <div className="absolute inset-0 bg-gradient-to-r from-terminal-green/5 to-transparent"></div>
+            <div className="relative flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Terminal className="w-8 h-8 text-terminal-green" />
+                  <Cpu className="w-6 h-6 text-terminal-green animate-pulse" />
+                  <Zap className="w-5 h-5 text-terminal-green animate-bounce" />
                 </div>
                 <div>
-                  <label className="block text-sm text-terminal-green opacity-70 mb-2">PERPLEXITY API KEY</label>
-                  <input
-                    type="password"
-                    placeholder="pplx-..."
-                    value={settings.perplexityApiKey}
-                    onChange={(e) => setSettings(prev => ({ ...prev, perplexityApiKey: e.target.value }))}
-                    className="w-full p-3 bg-black border border-terminal-green border-opacity-30 rounded text-terminal-green font-mono focus:border-opacity-60 focus:bg-opacity-5 focus:bg-terminal-green transition-all"
-                  />
+                  <h1 className="text-2xl font-bold text-terminal-green">NEURAL TERMINAL</h1>
+                  <p className="text-terminal-green-dim">Advanced AI Voice Interface v2.1.0</p>
                 </div>
               </div>
-
-              {/* Model Settings */}
-              <div className="space-y-4">
-                <h4 className="text-terminal-green opacity-70 font-semibold">NEURAL PARAMETERS</h4>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm text-terminal-green opacity-70 mb-2">TEMPERATURE</label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="2"
-                      step="0.1"
-                      value={settings.temperature}
-                      onChange={(e) => setSettings(prev => ({ ...prev, temperature: parseFloat(e.target.value) }))}
-                      className="w-full p-3 bg-black border border-terminal-green border-opacity-30 rounded text-terminal-green font-mono focus:border-opacity-60 focus:bg-opacity-5 focus:bg-terminal-green transition-all"
-                    />
-                    <div className="text-xs text-terminal-green opacity-50 mt-1">Creativity level</div>
-                  </div>
-                  <div>
-                    <label className="block text-sm text-terminal-green opacity-70 mb-2">MAX TOKENS</label>
-                    <input
-                      type="number"
-                      min="1000"
-                      max="8000"
-                      step="500"
-                      value={settings.maxTokens}
-                      onChange={(e) => setSettings(prev => ({ ...prev, maxTokens: parseInt(e.target.value) }))}
-                      className="w-full p-3 bg-black border border-terminal-green border-opacity-30 rounded text-terminal-green font-mono focus:border-opacity-60 focus:bg-opacity-5 focus:bg-terminal-green transition-all"
-                    />
-                    <div className="text-xs text-terminal-green opacity-50 mt-1">Response length</div>
-                  </div>
+              
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowSettings(!showSettings)}
+                  className="p-2 border border-terminal-green-border rounded hover:bg-terminal-green/10 transition-colors"
+                >
+                  <Settings className="w-5 h-5" />
+                </button>
+                <div className="flex items-center gap-2 text-sm">
+                  <Activity className="w-4 h-4 animate-pulse" />
+                  <span>{config.model.toUpperCase()}</span>
                 </div>
+              </div>
+            </div>
+          </div>
 
-                {/* Feature Toggles */}
-                <div className="grid grid-cols-2 gap-4">
-                  {[
-                    { key: 'conversationMemory', label: 'Conversation Memory' },
-                    { key: 'smartContext', label: 'Smart Context' },
-                    { key: 'voiceAutoSend', label: 'Voice Auto-Send' },
-                    { key: 'showTimestamps', label: 'Show Timestamps' },
-                    { key: 'soundEffects', label: 'Sound Effects' },
-                    { key: 'debugMode', label: 'Debug Mode' }
-                  ].map(({ key, label }) => (
-                    <div key={key} className="flex items-center gap-3">
-                      <input
-                        type="checkbox"
-                        id={key}
-                        checked={settings[key as keyof typeof settings] as boolean}
-                        onChange={(e) => setSettings(prev => ({ ...prev, [key]: e.target.checked }))}
-                        className="w-4 h-4 accent-terminal-green"
-                      />
-                      <label htmlFor={key} className="text-sm text-terminal-green opacity-70">
-                        {label}
-                      </label>
-                    </div>
-                  ))}
+          {/* Settings Panel */}
+          {showSettings && (
+            <div className="mb-6 p-4 border border-terminal-green-border rounded-lg bg-terminal-black-light">
+              <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                <Settings className="w-5 h-5" />
+                Configuration Panel
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold mb-2">AI Model</label>
+                  <select
+                    value={config.model}
+                    onChange={(e) => setConfig(prev => ({ ...prev, model: e.target.value as any }))}
+                    className="w-full bg-terminal-black border border-terminal-green-border rounded px-3 py-2 text-terminal-green"
+                  >
+                    <option value="gpt-4">GPT-4 (Most Capable)</option>
+                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Fast)</option>
+                    <option value="perplexity">Perplexity (Web Search)</option>
+                  </select>
                 </div>
+                <div>
+                  <label className="block text-sm font-bold mb-2">Temperature: {config.temperature}</label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.1"
+                    value={config.temperature}
+                    onChange={(e) => setConfig(prev => ({ ...prev, temperature: parseFloat(e.target.value) }))}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold mb-2">Max Tokens</label>
+                  <input
+                    type="number"
+                    min="100"
+                    max="4000"
+                    value={config.maxTokens}
+                    onChange={(e) => setConfig(prev => ({ ...prev, maxTokens: parseInt(e.target.value) }))}
+                    className="w-full bg-terminal-black border border-terminal-green-border rounded px-3 py-2 text-terminal-green"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setShowSettings(false)}
+                    className="px-4 py-2 bg-terminal-green/20 border border-terminal-green rounded hover:bg-terminal-green/30 transition-colors"
+                  >
+                    Close
+                  </button>
+                  <button
+                    onClick={downloadHistory}
+                    className="px-4 py-2 border border-terminal-green-border rounded hover:bg-terminal-green/10 transition-colors flex items-center gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    Export
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Terminal Output */}
+          <div 
+            ref={terminalRef}
+            className="h-96 overflow-y-auto bg-terminal-black border border-terminal-green-border rounded-lg p-4 mb-4 scrollbar-thin scrollbar-track-terminal-black scrollbar-thumb-terminal-green relative"
+            style={{
+              boxShadow: '0 0 20px rgba(0, 255, 65, 0.3)',
+              background: 'linear-gradient(145deg, #000000, #0a0a0a)'
+            }}
+          >
+            {messages.map((message) => (
+              <div key={message.id} className="mb-4 group">
+                <div className="flex items-start gap-2 text-xs text-terminal-green-dim mb-1">
+                  <span>[{formatTimestamp(message.timestamp)}]</span>
+                  <span className={`font-bold ${
+                    message.type === 'user' ? 'text-blue-400' : 
+                    message.type === 'assistant' ? 'text-terminal-green' : 
+                    message.type === 'error' ? 'text-red-400' :
+                    'text-yellow-400'
+                  }`}>
+                    {getMessagePrefix(message.type)}
+                  </span>
+                  {message.model && (
+                    <span className="text-purple-400">({message.model})</span>
+                  )}
+                </div>
+                <div className={`pl-4 whitespace-pre-wrap leading-relaxed ${
+                  message.type === 'user' ? 'text-blue-300' : 
+                  message.type === 'assistant' ? 'text-terminal-green' : 
+                  message.type === 'error' ? 'text-red-300' :
+                  'text-yellow-300'
+                } group-hover:bg-terminal-green/5 rounded p-2 transition-colors`}>
+                  {message.content}
+                </div>
+              </div>
+            ))}
+            
+            {isLoading && (
+              <div className="flex items-center gap-2 text-terminal-green animate-pulse p-2">
+                <Cpu className="w-4 h-4 animate-spin" />
+                <span>[NEURAL-AI PROCESSING]</span>
+                <div className="flex gap-1">
+                  <div className="w-1 h-1 bg-terminal-green rounded-full animate-bounce"></div>
+                  <div className="w-1 h-1 bg-terminal-green rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                  <div className="w-1 h-1 bg-terminal-green rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Voice Activation Button - Positioned under terminal */}
+          <div className="flex justify-center mb-4">
+            <button
+              onClick={toggleVoiceRecognition}
+              disabled={isLoading}
+              className={`relative p-6 rounded-full border-2 transition-all duration-300 group ${
+                isListening 
+                  ? 'border-red-500 bg-red-500/20 text-red-400 animate-pulse' 
+                  : 'border-terminal-green bg-terminal-green/10 text-terminal-green hover:bg-terminal-green/20 hover:scale-110'
+              } disabled:opacity-50 disabled:cursor-not-allowed`}
+              style={{
+                boxShadow: isListening 
+                  ? '0 0 40px rgba(239, 68, 68, 0.8)' 
+                  : '0 0 30px rgba(0, 255, 65, 0.5)'
+              }}
+            >
+              {isListening ? (
+                <MicOff className="w-10 h-10" />
+              ) : (
+                <Mic className="w-10 h-10" />
+              )}
+              
+              {/* Voice level indicator */}
+              {isListening && (
+                <div className="absolute inset-0 rounded-full border-2 border-red-400 animate-ping"></div>
+              )}
+              
+              {/* Tooltip */}
+              <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 px-3 py-1 bg-terminal-black border border-terminal-green-border rounded text-xs opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                {isListening ? 'Stop Listening' : 'Start Voice Input'}
+              </div>
+            </button>
+          </div>
+
+          {/* Input Form */}
+          <form onSubmit={handleSubmit} className="flex gap-2 mb-4">
+            <div className="flex-1 relative">
+              <input
+                ref={inputRef}
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                disabled={isLoading}
+                placeholder="Enter command (/help for commands) or ask AI anything..."
+                className="w-full bg-terminal-black border border-terminal-green-border rounded px-4 py-3 text-terminal-green placeholder-terminal-green-dim focus:outline-none focus:border-terminal-green focus:shadow-lg focus:shadow-terminal-green/30 disabled:opacity-50 pr-12"
+                style={{
+                  background: 'linear-gradient(145deg, #000000, #0a0a0a)',
+                }}
+              />
+              {isSpeaking && (
+                <Volume2 className="absolute right-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-terminal-green animate-pulse" />
+              )}
+            </div>
+            <button
+              type="submit"
+              disabled={!input.trim() || isLoading}
+              className="px-6 py-3 bg-terminal-green/10 border border-terminal-green-border rounded text-terminal-green hover:bg-terminal-green/20 hover:shadow-lg hover:shadow-terminal-green/30 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 flex items-center gap-2"
+            >
+              <Send className="w-5 h-5" />
+            </button>
+          </form>
+
+          {/* Enhanced Status Bar */}
+          <div className="flex justify-between items-center text-xs text-terminal-green-dim bg-terminal-black-light p-3 rounded border border-terminal-green-border">
+            <div className="flex items-center gap-6">
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${
+                  isListening ? 'bg-red-400 animate-pulse' : 
+                  isLoading ? 'bg-yellow-400 animate-bounce' : 
+                  'bg-terminal-green animate-pulse'
+                }`}></div>
+                <span>STATUS: {
+                  isListening ? 'LISTENING' : 
+                  isLoading ? 'PROCESSING' : 
+                  'READY'
+                }</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Database className="w-3 h-3" />
+                <span>MESSAGES: {messages.length}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Cpu className="w-3 h-3" />
+                <span>MODEL: {config.model.toUpperCase()}</span>
               </div>
             </div>
             
-            <div className="mt-6 flex gap-3">
-              <button
-                onClick={saveSettings}
-                className="px-4 py-2 border border-terminal-green border-opacity-30 rounded text-terminal-green font-medium hover:border-opacity-60 hover:bg-terminal-green hover:bg-opacity-10 transition-all"
-              >
-                <Download className="inline mr-2" size={16} />
-                SAVE CONFIG
-              </button>
-              <button
-                onClick={loadSettings}
-                className="px-4 py-2 border border-terminal-green border-opacity-30 rounded text-terminal-green font-medium hover:border-opacity-60 hover:bg-terminal-green hover:bg-opacity-10 transition-all"
-              >
-                <Upload className="inline mr-2" size={16} />
-                LOAD CONFIG
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Error Log Panel */}
-        {showLogs && (
-          <div className="mb-6 p-4 border border-red-400 border-opacity-50 rounded-lg bg-red-900 bg-opacity-10">
-            <h3 className="text-lg font-bold text-red-400 mb-4 flex items-center gap-2">
-              <AlertTriangle size={20} />
-              ERROR LOG VIEWER ({errorLogs.length})
-            </h3>
-            <div className="max-h-40 overflow-y-auto space-y-1 text-sm font-mono">
-              {errorLogs.slice(-20).map((log, index) => (
-                <div key={index} className={`${
-                  log.level === 'ERROR' ? 'text-red-400' : 
-                  log.level === 'WARN' ? 'text-yellow-400' : 
-                  'text-terminal-green opacity-70'
-                }`}>
-                  [{new Date(log.timestamp).toLocaleTimeString()}] [{log.level}] {log.message}
-                  {settings.debugMode && log.details && (
-                    <div className="text-xs opacity-50 ml-4">
-                      {JSON.stringify(log.details, null, 2)}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Model Selector & Status */}
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <Cpu className="text-terminal-green" size={20} />
-              <label className="text-terminal-green opacity-70">NEURAL MODEL:</label>
-            </div>
-            <select
-              value={selectedLLM}
-              onChange={(e) => setSelectedLLM(e.target.value)}
-              className="px-4 py-2 bg-black border border-terminal-green border-opacity-30 rounded text-terminal-green font-mono focus:border-opacity-60 focus:bg-opacity-5 focus:bg-terminal-green transition-all"
-            >
-              {Object.entries(LLM_PROVIDERS).map(([name, config]) => (
-                <option key={name} value={name} className="bg-black">
-                  {name}
-                </option>
-              ))}
-            </select>
-          </div>
-          
-          <div className="flex items-center gap-4">
-            <div className="text-terminal-green font-medium">
-              {isLoading ? (
-                <span className="animate-pulse">NEURAL PROCESSING...</span>
-              ) : (
-                `STATUS: ${status}`
-              )}
-            </div>
-            {isLoading && (
-              <div className="animate-spin">
-                <Cpu className="text-terminal-green" size={20} />
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Main Layout */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Terminal Output */}
-          <div className="lg:col-span-2">
-            <div 
-              ref={terminalRef}
-              className="h-96 bg-black border border-terminal-green border-opacity-30 p-4 rounded-lg overflow-y-auto font-mono text-sm terminal-glow"
-              style={{
-                boxShadow: '0 0 20px rgba(0, 255, 65, 0.1), inset 0 0 20px rgba(0, 255, 65, 0.05)'
-              }}
-            >
-              {terminalOutput.map((line, index) => (
-                <div key={index} className="text-terminal-green whitespace-pre-wrap break-words mb-1 glow-text">
-                  {line}
-                </div>
-              ))}
-              {isLoading && (
-                <div className="text-terminal-green opacity-70 animate-pulse">
-                  {'> NEURAL MATRIX COMPUTING...'}
+            <div className="flex items-center gap-4">
+              {isSpeaking && (
+                <div className="flex items-center gap-2 text-terminal-green">
+                  <Volume2 className="w-3 h-3 animate-pulse" />
+                  <span>SPEAKING</span>
                 </div>
               )}
+              <div className="flex items-center gap-2">
+                <Wifi className="w-3 h-3" />
+                <span>NEURAL LINK ACTIVE</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Clock className="w-3 h-3" />
+                <span>{"ACTIVE"}</span>
+              </div>
             </div>
-          </div>
-
-          {/* History/Stats Panel */}
-          <div className="lg:col-span-1">
-            {showHistory ? (
-              <div className="h-96 bg-black border border-terminal-green border-opacity-30 p-4 rounded-lg overflow-y-auto">
-                <h4 className="text-terminal-green font-bold mb-3 flex items-center gap-2">
-                  <History size={16} />
-                  NEURAL HISTORY
-                </h4>
-                <div className="space-y-2 text-sm">
-                  {chatHistory.slice(-10).map((msg, index) => (
-                    <div key={index} className="border-l-2 border-terminal-green border-opacity-30 pl-3">
-                      <div className="text-terminal-green opacity-50 text-xs">
-                        {new Date(msg.timestamp).toLocaleTimeString()}
-                        {msg.model && ` • ${msg.model}`}
-                        {msg.tokens && showTokens && ` • ${msg.tokens}t`}
-                      </div>
-                      <div className={`${msg.role === 'user' ? 'text-blue-400' : 'text-terminal-green'} text-xs mt-1`}>
-                        {msg.content.substring(0, 100)}...
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="h-96 bg-black border border-terminal-green border-opacity-30 p-4 rounded-lg">
-                <h4 className="text-terminal-green font-bold mb-3 flex items-center gap-2">
-                  <Activity size={16} />
-                  SYSTEM METRICS
-                </h4>
-                <div className="space-y-3 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-terminal-green opacity-70">Chats:</span>
-                    <span className="text-terminal-green">{systemStats.totalChats}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-terminal-green opacity-70">Tokens:</span>
-                    <span className="text-terminal-green">{systemStats.totalTokens}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-terminal-green opacity-70">Avg Response:</span>
-                    <span className="text-terminal-green">{Math.round(systemStats.avgResponseTime)}ms</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-terminal-green opacity-70">Voice Logs:</span>
-                    <span className="text-terminal-green">{transcriptionHistory.length}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-terminal-green opacity-70">Errors:</span>
-                    <span className={systemStats.errors > 0 ? 'text-red-400' : 'text-terminal-green'}>
-                      {systemStats.errors}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-terminal-green opacity-70">Uptime:</span>
-                    <span className="text-terminal-green">
-                      {Math.floor((Date.now() - systemStats.uptime) / 60000)}m
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Command Buttons */}
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mt-6 mb-4">
-          {[
-            { icon: HelpCircle, label: 'HELP', action: () => showHelp() },
-            { icon: History, label: 'LOGS', action: () => showChatHistory() },
-            { icon: Trash2, label: 'CLEAR', action: () => { setTerminalOutput([]); appendToTerminal('> TERMINAL CLEARED'); } },
-            { icon: Activity, label: 'STATUS', action: () => showStatus() },
-            { icon: Download, label: 'EXPORT', action: () => exportChatHistory() },
-            { icon: RotateCcw, label: 'RESET', action: () => resetSystem() }
-          ].map(({ icon: Icon, label, action }) => (
-            <button
-              key={label}
-              onClick={action}
-              className="flex items-center justify-center gap-2 py-3 px-4 border border-terminal-green border-opacity-30 rounded-lg text-terminal-green font-medium hover:border-opacity-60 hover:bg-terminal-green hover:bg-opacity-10 transition-all"
-            >
-              <Icon size={16} />
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* Input */}
-        <div className="flex gap-3 mb-6">
-          <input
-            type="text"
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-            placeholder="ENTER NEURAL COMMAND OR MESSAGE..."
-            className="flex-1 p-4 bg-black border border-terminal-green border-opacity-30 rounded-lg text-terminal-green placeholder-terminal-green placeholder-opacity-50 font-mono focus:border-opacity-60 focus:bg-opacity-5 focus:bg-terminal-green transition-all"
-            style={{
-              boxShadow: 'inset 0 0 10px rgba(0, 255, 65, 0.1)'
-            }}
-          />
-          <button
-            onClick={sendMessage}
-            disabled={!message.trim() || isLoading}
-            className="flex items-center gap-2 px-6 py-4 border border-terminal-green border-opacity-30 rounded-lg text-terminal-green font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:border-opacity-60 hover:bg-terminal-green hover:bg-opacity-10 transition-all"
-          >
-            <Send size={18} />
-            SEND
-          </button>
-        </div>
-
-        {/* Voice Button */}
-        <button
-          onClick={isRecording ? stopRecording : startRecording}
-          className={`w-full py-6 rounded-xl font-bold text-xl transition-all duration-300 border-2 ${
-            isRecording 
-              ? 'border-red-400 text-red-400 bg-red-900 bg-opacity-20 animate-pulse' 
-              : 'border-terminal-green text-terminal-green hover:bg-terminal-green hover:bg-opacity-10'
-          }`}
-          style={{
-            boxShadow: isRecording 
-              ? '0 0 30px rgba(255, 0, 0, 0.3)' 
-              : '0 0 20px rgba(0, 255, 65, 0.2)'
-          }}
-        >
-          {isRecording ? (
-            <>
-              <MicOff className="inline mr-3" size={24} />
-              NEURAL RECORDING ACTIVE - CLICK TO STOP
-            </>
-          ) : (
-            <>
-              <Mic className="inline mr-3" size={24} />
-              ACTIVATE VOICE NEURAL INTERFACE
-            </>
-          )}
-        </button>
-
-        {/* Stats Footer */}
-        <div className="mt-6 text-center text-terminal-green opacity-50 text-sm">
-          <div className="flex justify-center items-center gap-6">
-            <span>CHATS: {systemStats.totalChats}</span>
-            <span>TOKENS: {systemStats.totalTokens}</span>
-            <span>AVG: {Math.round(systemStats.avgResponseTime)}ms</span>
-            <span>ERRORS: {systemStats.errors}</span>
-            <span>UPTIME: {Math.floor((Date.now() - systemStats.uptime) / 60000)}m</span>
           </div>
         </div>
       </div>
 
       <style jsx>{`
-        .glow-effect {
-          filter: drop-shadow(0 0 10px #00ff41);
-        }
-        .glow-text {
-          text-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
-        }
-        .terminal-glow {
-          box-shadow: 0 0 20px rgba(0, 255, 65, 0.1), inset 0 0 20px rgba(0, 255, 65, 0.05);
-        }
-        ::-webkit-scrollbar {
-          width: 8px;
-        }
-        ::-webkit-scrollbar-track {
-          background: #000;
-        }
-        ::-webkit-scrollbar-thumb {
-          background: rgba(0, 255, 65, 0.3);
-          border-radius: 4px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-          background: rgba(0, 255, 65, 0.5);
+        @keyframes pulse {
+          0%, 100% { opacity: 0.1; }
+          50% { opacity: 0.2; }
         }
       `}</style>
     </div>
-  )
+  );
 }
+
